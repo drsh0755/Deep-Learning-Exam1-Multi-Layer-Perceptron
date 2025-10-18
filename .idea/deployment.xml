@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" promptOnRemoteOverwrite="CHECK_TIMESTAMP" serverName="ubuntu@13.222.204.167:22 key (2)" useTempFile="true" deleteMissingItems="true" createEmptyFolders="true" remoteFilesAllowedToDisappearOnAutoupload="false" notifyRemoteChanges="true">
+  <component name="PublishConfigData" autoUpload="Always" promptOnRemoteOverwrite="CHECK_TIMESTAMP" useTempFile="true" deleteMissingItems="true" createEmptyFolders="true" remoteFilesAllowedToDisappearOnAutoupload="false" notifyRemoteChanges="true">
     <serverData>
       <paths name="ubuntu@13.222.204.167:22 key">
         <serverdata>
