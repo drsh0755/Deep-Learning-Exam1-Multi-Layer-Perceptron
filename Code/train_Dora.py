@@ -38,6 +38,7 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import f1_score, cohen_kappa_score, accuracy_score, matthews_corrcoef
 from tensorflow.keras.utils import to_categorical
+from sklearn.utils.class_weight import compute_class_weight
 logging.getLogger('absl').setLevel(logging.ERROR)
 
 
@@ -67,7 +68,7 @@ DATA_DIR = os.getcwd() + os.path.sep + 'Data' + os.path.sep
 sep = os.path.sep
 os.chdir(OR_PATH) # Come back to the folder where the code resides , all files will be left on this directory
 
-n_epoch = 12
+n_epoch = 50
 BATCH_SIZE = 128
 
 ## Image processing
@@ -129,9 +130,83 @@ def process_target(target_type):
         pass
 
     return class_names
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# ✅ NEW FUNCTION: Check and Report Class Imbalance
+# ------------------------------------------------------------------------------------------------------------------
+
+def check_class_imbalance(train_data, class_names):
+    '''
+    Check for class imbalance in training data
+    Returns class_weight dictionary if imbalance detected
+    '''
+
+    print("\n" + "=" * 70)
+    print("CLASS DISTRIBUTION ANALYSIS")
+    print("=" * 70)
+
+    # Get class counts
+    class_counts = train_data['target'].value_counts().sort_index()
+
+    print("\nClass Distribution (Training Data):")
+    print("-" * 70)
+    for class_name in sorted(class_counts.index):
+        count = class_counts[class_name]
+        pct = (count / len(train_data) * 100)
+        print(f"  {class_name}: {count:6d} samples ({pct:6.2f}%)")
+
+    # Calculate imbalance ratio
+    max_count = class_counts.max()
+    min_count = class_counts.min()
+    imbalance_ratio = max_count / min_count
+
+    print("-" * 70)
+    print(f"Imbalance Ratio: {imbalance_ratio:.2f}x (max/min)")
+
+    # Categorize imbalance severity
+    if imbalance_ratio < 1.5:
+        severity = "✓ BALANCED"
+    elif imbalance_ratio < 3:
+        severity = "⚠ MILD IMBALANCE"
+    elif imbalance_ratio < 10:
+        severity = "⚠ MODERATE IMBALANCE"
+    else:
+        severity = "✗ SEVERE IMBALANCE"
+
+    print(f"Status: {severity}")
+    print("=" * 70)
+
+    # Calculate class weights if imbalanced
+    if imbalance_ratio >= 1.5:
+        y_train = train_data['target'].values
+
+        class_weights_array = compute_class_weight(
+            'balanced',
+            classes=class_names,
+            y=y_train
+        )
+
+        class_weight_dict = {}
+        for idx, class_name in enumerate(class_names):
+            class_weight_dict[idx] = class_weights_array[idx]
+
+        print("\nClass Weights (for balancing):")
+        print("-" * 70)
+        for idx, class_name in enumerate(class_names):
+            weight = class_weight_dict[idx]
+            print(f"  Class {idx} ({class_name}): {weight:.4f}")
+        print("=" * 70)
+
+        return class_weight_dict
+    else:
+        print("\nNo significant imbalance detected. Proceeding without class weights.")
+        print("=" * 70)
+        return None
+
 #------------------------------------------------------------------------------------------------------------------
 
-def process_path(feature, target):
+def process_path(feature, target, augment=False):
     '''
           feature is the path and id of the image
           target is the result
@@ -148,6 +223,22 @@ def process_path(feature, target):
     img = tf.image.resize( img, [IMAGE_SIZE, IMAGE_SIZE])
 
     # augmentation
+    # NORMALIZATION (always, not just augmented)
+    img = img / 255.0
+    # DATA AUGMENTATION (only for training, not testing)
+    if augment:
+        # Random rotation
+        img = tf.image.rot90(img, k=tf.random.uniform([], 0, 4, dtype=tf.int32))
+
+        # Random horizontal flip
+        img = tf.image.random_flip_left_right(img)
+
+        # Random brightness adjustment
+        img = tf.image.random_brightness(img, max_delta=0.2)
+
+        # Random contrast adjustment
+        img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
+
 
     img = tf.reshape(img, [-1])
 
@@ -174,7 +265,7 @@ def get_target(num_classes):
 #------------------------------------------------------------------------------------------------------------------
 
 
-def read_data(num_classes):
+def read_data(num_classes, augment=False):
     '''
           reads the dataset and process the target
     '''
@@ -184,7 +275,7 @@ def read_data(num_classes):
 
     list_ds = tf.data.Dataset.from_tensor_slices((ds_inputs,ds_targets)) # creates a tensor from the image paths and targets
 
-    final_ds = list_ds.map(process_path, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE)
+    final_ds = list_ds.map(lambda x, y: process_path(x, y, augment=augment),num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE)
 
     return final_ds
 #------------------------------------------------------------------------------------------------------------------
@@ -203,12 +294,19 @@ def model_definition():
     model = tf.keras.Sequential()
 
     # Define the first dense layer
+    # ✅ ADD L2 regularization + Dropout to each layer
     model.add(tf.keras.layers.Dense(300, activation='relu', input_shape=(INPUTS_r,)))
+    # model.add(tf.keras.layers.Dropout(0.2))
     model.add(tf.keras.layers.Dense(200, activation='relu'))
+    # model.add(tf.keras.layers.Dropout(0.2))
     model.add(tf.keras.layers.Dense(100, activation='relu'))
+    # model.add(tf.keras.layers.Dropout(0.2))
     model.add(tf.keras.layers.Dense(100, activation='relu'))
+    # model.add(tf.keras.layers.Dropout(0.2))
     model.add(tf.keras.layers.Dense(80, activation='relu'))
+    # model.add(tf.keras.layers.Dropout(0.2))
     model.add(tf.keras.layers.Dense(50, activation='relu'))
+    # # model.add(tf.keras.layers.Dropout(0.05))
 
     model.add(tf.keras.layers.Dense(OUTPUTS_a, activation='softmax')) #final layer , outputs_a is the number of targets
 
@@ -219,16 +317,43 @@ def model_definition():
 #------------------------------------------------------------------------------------------------------------------
 
 def train_func(train_ds):
+    # '''
+    #     train the model
+    # '''
+    #
+    # #early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience =100)
+    # check_point = tf.keras.callbacks.ModelCheckpoint('model_{}.keras'.format(NICKNAME), monitor='accuracy', save_best_only=True)
+    # final_model = model_definition()
+    #
+    # #final_model.fit(train_ds,  epochs=n_epoch, callbacks=[early_stop, check_point])
+    # final_model.fit(train_ds,  epochs=n_epoch, callbacks=[check_point])
     '''
-        train the model
+            train the model
+
+            Args:
+                train_ds: training dataset
+                class_weights: optional dictionary of class weights for imbalanced data
     '''
 
-    #early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience =100)
-    check_point = tf.keras.callbacks.ModelCheckpoint('model_{}.keras'.format(NICKNAME), monitor='accuracy', save_best_only=True)
+    # early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience =100)
+    check_point = tf.keras.callbacks.ModelCheckpoint('model_{}.keras'.format(NICKNAME), monitor='accuracy',
+                                                     save_best_only=True)
     final_model = model_definition()
 
-    #final_model.fit(train_ds,  epochs=n_epoch, callbacks=[early_stop, check_point])
-    final_model.fit(train_ds,  epochs=n_epoch, callbacks=[check_point])
+    # ✅ MODIFIED: Pass class_weights if provided
+    fit_kwargs = {
+        'epochs': n_epoch,
+        'callbacks': [check_point]
+    }
+
+    # if class_weights is not None:
+    #     print("\nApplying class weights to balance training...")
+    #     fit_kwargs['class_weight'] = class_weights
+    #
+    # final_model.fit(train_ds, **fit_kwargs)
+    final_model.fit(train_ds, epochs=n_epoch, callbacks=[check_point])
+
+
 #------------------------------------------------------------------------------------------------------------------
 
 def predict_func(test_ds):
@@ -343,14 +468,20 @@ def main():
 
     xdf_dset = xdf_data[xdf_data["split"] == 'train'].copy()
 
-    train_ds = read_data( OUTPUTS_a )
+    train_ds = read_data( OUTPUTS_a, augment=True)
     train_func(train_ds)
+    # # ✅ NEW: Check for class imbalance and get class weights if needed
+    # class_weights = check_class_imbalance(xdf_dset, class_names)
+    #
+    # train_ds = read_data(OUTPUTS_a, augment=True)
+    # # ✅ MODIFIED: Pass class_weights to training function
+    # train_func(train_ds, class_weights=class_weights)
 
     # Preprocessing Test dataset
 
     xdf_dset = xdf_data[xdf_data["split"] == 'test'].copy()
 
-    test_ds= read_data(OUTPUTS_a)
+    test_ds= read_data(OUTPUTS_a, augment=False)
     predict_func(test_ds)
 
     ## Metrics Function over the result of the test dataset

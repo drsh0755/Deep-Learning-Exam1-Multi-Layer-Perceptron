@@ -225,6 +225,7 @@ def predict_func(test_ds):
     xres = [tf.argmax(f).numpy() for f in res]
     xdf_dset['results'] = xres
     xdf_dset.to_excel('results_{}.xlsx'.format(NICKNAME), index=False)
+    save_model(final_model)
 #------------------------------------------------------------------------------------------------------------------
 
 def metrics_func(metrics, aggregates=[]):
