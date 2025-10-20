@@ -68,7 +68,7 @@ DATA_DIR = os.getcwd() + os.path.sep + 'Data' + os.path.sep
 sep = os.path.sep
 os.chdir(OR_PATH) # Come back to the folder where the code resides , all files will be left on this directory
 
-n_epoch = 50
+n_epoch = 100
 BATCH_SIZE = 128
 
 ## Image processing
