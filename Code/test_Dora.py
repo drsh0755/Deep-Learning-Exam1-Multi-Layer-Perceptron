@@ -64,7 +64,7 @@ args = parser.parse_args()
 PATH = args.path
 DATA_DIR = args.path + os.path.sep + 'Data' + os.path.sep
 SPLIT = args.split
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 ## Process images in parallel
 AUTOTUNE = tf.data.AUTOTUNE
 
