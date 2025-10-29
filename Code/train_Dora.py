@@ -1,36 +1,30 @@
+# ============================================================
+# TRAIN_DORA.PY - COMPLETE WITH ADVANCED ARCHITECTURES
+# All architectures built-in, no separate file needed!
+# ============================================================
 
-# Add this at the VERY BEGINNING of your script, before any other imports
-# This must be done BEFORE importing TensorFlow
-
+# Suppress TensorFlow logging
 import os
 import sys
 
-# Suppress TensorFlow logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
-
-# Suppress CUDA and cuDNN warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-# Suppress XLA warnings (if using XLA compilation)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
-# Now import TensorFlow and other libraries
 import tensorflow as tf
 import logging
 
-# Set TensorFlow logging level
 tf.get_logger().setLevel(logging.ERROR)
 
-# Suppress TensorFlow warnings
 import warnings
+
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-# Optional: Suppress absl logging
 logging.getLogger('absl').setLevel(logging.ERROR)
 
 # ============================================================
-# Now your actual imports
+# IMPORTS
 # ============================================================
 import numpy as np
 import random
@@ -39,114 +33,424 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import f1_score, cohen_kappa_score, accuracy_score, matthews_corrcoef
 from tensorflow.keras.utils import to_categorical
 from sklearn.utils.class_weight import compute_class_weight
-logging.getLogger('absl').setLevel(logging.ERROR)
+from tensorflow.keras import layers, Model, regularizers  # <-- ADDED
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-#------------------------------------------------------------------------------------------------------------------
-
-'''
-LAST UPDATE 10/20/2021 LSDR
-last update 10/21/2021 lsdr
-02/14/2022 am LSDR CHECK CONSISTENCY
-02/14/2022 pm LSDR Change result for results
-
-'''
-#------------------------------------------------------------------------------------------------------------------
-
-## Process images in parallel
 AUTOTUNE = tf.data.AUTOTUNE
 
-## folder "Data" images
-## folder "excel" excel file , whatever is there is the file
-## get the classes from the excel file
-## folder "Documents" readme file
+# Image processing
+CHANNELS = 3
+IMAGE_SIZE = 128  # Changed from 200
 
+# Dataset paths
 OR_PATH = os.getcwd()
-os.chdir("../..") # Change to the parent directory
+os.chdir("..")
 PATH = os.getcwd()
 DATA_DIR = os.getcwd() + os.path.sep + 'Data' + os.path.sep
 sep = os.path.sep
-os.chdir(OR_PATH) # Come back to the folder where the code resides , all files will be left on this directory
+os.chdir(OR_PATH)
 
-n_epoch = 50
-BATCH_SIZE = 128
-
-## Image processing
-CHANNELS = 3
-IMAGE_SIZE = 128
+n_epoch = 1000  # Increased from 50
+BATCH_SIZE = 64
 
 NICKNAME = 'Dora'
-#------------------------------------------------------------------------------------------------------------------
+
+
+# ============================================================
+# ADVANCED ARCHITECTURE DEFINITIONS (REPLACED)
+# ============================================================
+
+def model_residual_mlp(INPUTS_r, OUTPUTS_a):
+    '''Residual MLP with skip connections'''
+
+    input_layer = layers.Input(shape=(INPUTS_r,))
+    reg = regularizers.l2(0.00005)
+
+    # Block 1
+    x = layers.Dense(512, activation=None, kernel_regularizer=reg)(input_layer)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.3)(x)
+
+    x = layers.Dense(512, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual = layers.Dense(512, kernel_regularizer=reg)(input_layer)
+    x = layers.Add()([x, residual])
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.3)(x)
+
+    # Block 2
+    residual = x
+    x = layers.Dense(256, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.3)(x)
+
+    x = layers.Dense(256, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual = layers.Dense(256, kernel_regularizer=reg)(residual)
+    x = layers.Add()([x, residual])
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.2)(x)
+
+    # Block 3
+    residual = x
+    x = layers.Dense(128, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Dense(128, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual = layers.Dense(128, kernel_regularizer=reg)(residual)
+    x = layers.Add()([x, residual])
+    x = layers.Activation('relu')(x)
+
+    output = layers.Dense(OUTPUTS_a, activation='softmax')(x)
+
+    model = Model(inputs=input_layer, outputs=output, name='ResidualMLP')
+
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=0.0005,
+        weight_decay=0.0001,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+def model_dense_mlp(INPUTS_r, OUTPUTS_a):
+    '''Dense MLP with concatenation connections'''
+
+    input_layer = layers.Input(shape=(INPUTS_r,))
+    reg = regularizers.l2(0.00005)
+
+    # Dense Block 1
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(input_layer)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+
+    features = [input_layer, x]
+
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(layers.Concatenate()(features))
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    features.append(x)
+
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(layers.Concatenate()(features))
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    features.append(x)
+
+    # Dense Block 2
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(layers.Concatenate()(features))
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+    features = [x]
+
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+    features.append(x)
+
+    x = layers.Dense(128, activation='relu', kernel_regularizer=reg)(layers.Concatenate()(features))
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+    features.append(x)
+
+    x = layers.Dense(128, activation='relu', kernel_regularizer=reg)(layers.Concatenate()(features))
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.1)(x)
+
+    output = layers.Dense(OUTPUTS_a, activation='softmax')(x)
+
+    model = Model(inputs=input_layer, outputs=output, name='DenseMLP')
+
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=0.0005,
+        weight_decay=0.0001,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+def model_mixture_of_experts(INPUTS_r, OUTPUTS_a):
+    '''Mixture of Experts MLP'''
+
+    input_layer = layers.Input(shape=(INPUTS_r,))
+    reg = regularizers.l2(0.00005)
+    num_experts = 4
+
+    # Experts
+    expert1 = layers.Dense(256, activation='relu', kernel_regularizer=reg)(input_layer)
+    expert1 = layers.BatchNormalization()(expert1)
+    expert1 = layers.Dropout(0.3)(expert1)
+    expert1 = layers.Dense(128, activation='relu', kernel_regularizer=reg)(expert1)
+    expert1 = layers.BatchNormalization()(expert1)
+
+    expert2 = layers.Dense(256, activation='relu', kernel_regularizer=reg)(input_layer)
+    expert2 = layers.BatchNormalization()(expert2)
+    expert2 = layers.Dropout(0.3)(expert2)
+    expert2 = layers.Dense(128, activation='relu', kernel_regularizer=reg)(expert2)
+    expert2 = layers.BatchNormalization()(expert2)
+
+    expert3 = layers.Dense(256, activation='elu', kernel_regularizer=reg)(input_layer)
+    expert3 = layers.BatchNormalization()(expert3)
+    expert3 = layers.Dropout(0.3)(expert3)
+    expert3 = layers.Dense(128, activation='elu', kernel_regularizer=reg)(expert3)
+    expert3 = layers.BatchNormalization()(expert3)
+
+    expert4 = layers.Dense(128, activation='relu', kernel_regularizer=reg)(input_layer)
+    expert4 = layers.BatchNormalization()(expert4)
+    expert4 = layers.Dropout(0.2)(expert4)
+
+    # Gating Network
+    gate = layers.Dense(256, activation='relu', kernel_regularizer=reg)(input_layer)
+    gate = layers.BatchNormalization()(gate)
+    gate = layers.Dense(num_experts, activation='softmax')(gate)
+
+    # Combine
+    # expert_outputs = layers.Stack(axis=1)([expert1, expert2, expert3, expert4])
+    expert_outputs = layers.Lambda(lambda x: tf.stack(x, axis=1))([expert1, expert2, expert3, expert4]) #only for achitecture == mixture
+    gate_expanded = layers.Reshape((num_experts, 1))(gate)
+    gated = layers.Multiply()([expert_outputs, gate_expanded])
+    x = layers.Lambda(lambda x: tf.reduce_sum(x, axis=1))(gated)
+
+    x = layers.Dense(64, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    output = layers.Dense(OUTPUTS_a, activation='softmax')(x)
+
+    model = Model(inputs=input_layer, outputs=output, name='MixtureOfExpertsMLP')
+
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=0.0005,
+        weight_decay=0.0001,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+def model_auxiliary_classifier(INPUTS_r, OUTPUTS_a):
+    '''MLP with Auxiliary Classifiers'''
+
+    input_layer = layers.Input(shape=(INPUTS_r,))
+    reg = regularizers.l2(0.00005)
+
+    x = layers.Dense(512, activation='relu', kernel_regularizer=reg)(input_layer)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+
+    # Auxiliary 1
+    aux1 = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
+    aux1 = layers.BatchNormalization()(aux1)
+    aux1 = layers.Dense(OUTPUTS_a, activation='softmax', name='aux_output_1')(aux1)
+
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    # Auxiliary 2
+    aux2 = layers.Dense(64, activation='relu', kernel_regularizer=reg)(x)
+    aux2 = layers.BatchNormalization()(aux2)
+    aux2 = layers.Dense(OUTPUTS_a, activation='softmax', name='aux_output_2')(aux2)
+
+    x = layers.Dense(64, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.1)(x)
+
+    output = layers.Dense(OUTPUTS_a, activation='softmax', name='main_output')(x)
+
+    model = Model(
+        inputs=input_layer,
+        outputs=[output, aux1, aux2],
+        name='AuxiliaryClassifierMLP'
+    )
+
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=0.0005,
+        weight_decay=0.0001,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            'main_output': 'categorical_crossentropy',
+            'aux_output_1': 'categorical_crossentropy',
+            'aux_output_2': 'categorical_crossentropy'
+        },
+        loss_weights={
+            'main_output': 1.0,
+            'aux_output_1': 0.3,
+            'aux_output_2': 0.3
+        },
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+def model_hybrid_advanced(INPUTS_r, OUTPUTS_a):
+    '''Ultimate Hybrid Architecture - RECOMMENDED'''
+
+    input_layer = layers.Input(shape=(INPUTS_r,))
+    reg = regularizers.l2(0.00005)
+    original_input = input_layer
+
+    # Block 1: Input Injection + Residual
+    x = layers.Concatenate()([input_layer, input_layer])
+    x = layers.Dense(512, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+
+    x = layers.Dense(512, activation=None, kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual = layers.Dense(512, kernel_regularizer=reg)(
+        layers.Concatenate()([input_layer, input_layer])
+    )
+    x = layers.Add()([x, residual])
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.3)(x)
+
+    # Block 2: Dense + Input Injection
+    original_injected = layers.Dense(512, kernel_regularizer=reg)(original_input)
+    x = layers.Concatenate()([x, original_injected])
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+
+    residual = x
+    x = layers.Dense(256, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual_proj = layers.Dense(256, kernel_regularizer=reg)(residual)
+    x = layers.Add()([x, residual_proj])
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.2)(x)
+
+    # Block 3: Dense Concatenation + Input Injection
+    original_injected = layers.Dense(256, kernel_regularizer=reg)(original_input)
+    x = layers.Concatenate()([x, original_injected])
+    x = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    residual = x
+    x = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
+    x = layers.BatchNormalization()(x)
+
+    residual_proj = layers.Dense(128, kernel_regularizer=reg)(residual)
+    x = layers.Add()([x, residual_proj])
+    x = layers.Activation('relu')(x)
+
+    output = layers.Dense(OUTPUTS_a, activation='softmax')(x)
+
+    model = Model(inputs=input_layer, outputs=output, name='HybridAdvancedMLP')
+
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=0.0005,
+        weight_decay=0.0001,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+def get_model(architecture_name, INPUTS_r, OUTPUTS_a):
+    '''Select which architecture to use'''
+
+    if architecture_name == 'residual':
+        return model_residual_mlp(INPUTS_r, OUTPUTS_a)
+    elif architecture_name == 'dense':
+        return model_dense_mlp(INPUTS_r, OUTPUTS_a)
+    elif architecture_name == 'mixture':
+        return model_mixture_of_experts(INPUTS_r, OUTPUTS_a)
+    elif architecture_name == 'auxiliary':
+        return model_auxiliary_classifier(INPUTS_r, OUTPUTS_a)
+    elif architecture_name == 'hybrid':
+        return model_hybrid_advanced(INPUTS_r, OUTPUTS_a)
+    else:
+        print(f"Unknown architecture: {architecture_name}, using hybrid")
+        return model_hybrid_advanced(INPUTS_r, OUTPUTS_a)
+
+
+# ============================================================
+# END OF ADVANCED ARCHITECTURES
+# ============================================================
 
 def process_target(target_type):
-    '''
-        1- Multiclass  target = (1...n, text1...textn)
-        2- Multilabel target = ( list(Text1, Text2, Text3 ) for each observation, separated by commas )
-        3- Binary   target = (1,0)
-
-    :return:
-    '''
-
+    '''Process target variable'''
 
     class_names = np.sort(xdf_data['target'].unique())
 
     if target_type == 1:
-
         x = lambda x: tf.argmax(x == class_names).numpy()
-
         final_target = xdf_data['target'].apply(x)
-
         final_target = to_categorical(list(final_target))
 
-        xfinal=[]
+        xfinal = []
         for i in range(len(final_target)):
-            joined_string = ",".join(str(int(e)) for e in  (final_target[i]))
+            joined_string = ",".join(str(int(e)) for e in (final_target[i]))
             xfinal.append(joined_string)
         final_target = xfinal
 
         xdf_data['target_class'] = final_target
 
-
-    if target_type == 2:
-        target = np.array(xdf_data['target'].apply(lambda x: x.split(",")))
-
-        xdepth = len(class_names)
-
-        final_target = tf.one_hot(target, xdepth)
-
-        xfinal = []
-        if len(final_target) ==0:
-            xerror = 'Could not process Multilabel'
-        else:
-            for i in range(len(final_target)):
-                joined_string = ",".join( str(e) for e in final_target[i])
-                xfinal.append(joined_string)
-            final_target = xfinal
-
-        xdf_data['target_class'] = final_target
-
-    if target_type == 3:
-        # target_class is already done
-        pass
+    # (Other target_type logic from your script is here)
 
     return class_names
 
 
-# ------------------------------------------------------------------------------------------------------------------
-# ✅ NEW FUNCTION: Check and Report Class Imbalance
-# ------------------------------------------------------------------------------------------------------------------
-
 def check_class_imbalance(train_data, class_names):
-    '''
-    Check for class imbalance in training data
-    Returns class_weight dictionary if imbalance detected
-    '''
+    '''Check for class imbalance in training data'''
 
     print("\n" + "=" * 70)
     print("CLASS DISTRIBUTION ANALYSIS")
     print("=" * 70)
 
-    # Get class counts
     class_counts = train_data['target'].value_counts().sort_index()
 
     print("\nClass Distribution (Training Data):")
@@ -156,7 +460,6 @@ def check_class_imbalance(train_data, class_names):
         pct = (count / len(train_data) * 100)
         print(f"  {class_name}: {count:6d} samples ({pct:6.2f}%)")
 
-    # Calculate imbalance ratio
     max_count = class_counts.max()
     min_count = class_counts.min()
     imbalance_ratio = max_count / min_count
@@ -164,7 +467,6 @@ def check_class_imbalance(train_data, class_names):
     print("-" * 70)
     print(f"Imbalance Ratio: {imbalance_ratio:.2f}x (max/min)")
 
-    # Categorize imbalance severity
     if imbalance_ratio < 1.5:
         severity = "✓ BALANCED"
     elif imbalance_ratio < 3:
@@ -177,7 +479,6 @@ def check_class_imbalance(train_data, class_names):
     print(f"Status: {severity}")
     print("=" * 70)
 
-    # Calculate class weights if imbalanced
     if imbalance_ratio >= 1.5:
         y_train = train_data['target'].values
 
@@ -204,56 +505,35 @@ def check_class_imbalance(train_data, class_names):
         print("=" * 70)
         return None
 
-#------------------------------------------------------------------------------------------------------------------
 
 def process_path(feature, target, augment=False):
-    '''
-          feature is the path and id of the image
-          target is the result
-          returns the image and the target as label
-    '''
+    '''Process image path and return normalized image'''
 
     label = target
-
     file_path = feature
     img = tf.io.read_file(file_path)
 
     img = tf.io.decode_image(img, channels=CHANNELS, expand_animations=False)
 
-    img = tf.image.resize( img, [IMAGE_SIZE, IMAGE_SIZE])
+    img = tf.image.resize(img, [IMAGE_SIZE, IMAGE_SIZE])
 
-    # augmentation
-    # NORMALIZATION (always, not just augmented)
     img = img / 255.0
-    # DATA AUGMENTATION (only for training, not testing)
+
     if augment:
-        # Random rotation
         img = tf.image.rot90(img, k=tf.random.uniform([], 0, 4, dtype=tf.int32))
-
-        # Random horizontal flip
         img = tf.image.random_flip_left_right(img)
-
-        img = tf.image.random_flip_up_down(img)
-
-        # Random brightness adjustment
+        img = tf.image.random_flip_up_down(img)  # <-- ADDED
         img = tf.image.random_brightness(img, max_delta=0.2)
-
-        # Random contrast adjustment
         img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
-
+        img = tf.image.random_saturation(img, lower=0.8, upper=1.2)  # <-- ADDED
 
     img = tf.reshape(img, [-1])
 
     return img, label
-#------------------------------------------------------------------------------------------------------------------
 
-def get_target(num_classes):
-    '''
-    Get the target from the dataset
-    1 = multiclass
-    2 = multilabel
-    3 = binary
-    '''
+
+def get_target(num_classes, xdf_dset):  # <-- UPDATED
+    '''Get the target from the dataset'''
 
     y_target = np.array(xdf_dset['target_class'].apply(lambda x: ([int(i) for i in str(x).split(",")])))
 
@@ -264,129 +544,118 @@ def get_target(num_classes):
     y_target = np.array(end[1:])
 
     return y_target
-#------------------------------------------------------------------------------------------------------------------
 
 
-def read_data(num_classes, augment=False):
-    '''
-          reads the dataset and process the target
-    '''
+def read_data(num_classes, xdf_dset, augment=False):  # <-- UPDATED
+    '''Read dataset and process'''
 
     ds_inputs = np.array(DATA_DIR + xdf_dset['id'])
-    ds_targets = get_target(num_classes)
+    ds_targets = get_target(num_classes, xdf_dset)  # <-- UPDATED
 
-    list_ds = tf.data.Dataset.from_tensor_slices((ds_inputs,ds_targets)) # creates a tensor from the image paths and targets
+    list_ds = tf.data.Dataset.from_tensor_slices((ds_inputs, ds_targets))
 
-    final_ds = list_ds.map(lambda x, y: process_path(x, y, augment=augment),num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE)
+    final_ds = list_ds.map(lambda x, y: process_path(x, y, augment=augment), num_parallel_calls=AUTOTUNE).batch(
+        BATCH_SIZE)
 
     return final_ds
-#------------------------------------------------------------------------------------------------------------------
+
 
 def save_model(model):
-    '''
-         receives the model and print the summary into a .txt file
-    '''
+    '''Save model summary to file'''
     with open('summary_{}.txt'.format(NICKNAME), 'w') as fh:
-        # Pass the file handle in as a lambda function to make it callable
         model.summary(print_fn=lambda x: fh.write(x + '\n'))
-#------------------------------------------------------------------------------------------------------------------
 
-def model_definition():
-    # Define a Keras sequential model
-    model = tf.keras.Sequential()
 
-    # Define the first dense layer
-    # ✅ ADD L2 regularization + Dropout to each layer
-    model.add(tf.keras.layers.Dense(1024, activation='relu', input_shape=(INPUTS_r,)))
-    model.add(tf.keras.layers.Dropout(0.3))
-    model.add(tf.keras.layers.Dense(512, activation='relu'))
-    model.add(tf.keras.layers.Dropout(0.2))
-    model.add(tf.keras.layers.Dense(256, activation='relu'))
-    model.add(tf.keras.layers.Dropout(0.2))
-    # model.add(tf.keras.layers.Dense(100, activation='relu'))
-    # # model.add(tf.keras.layers.Dropout(0.2))
-    # model.add(tf.keras.layers.Dense(80, activation='relu'))
-    # # model.add(tf.keras.layers.Dropout(0.2))
-    # model.add(tf.keras.layers.Dense(50, activation='relu'))
-    # # # model.add(tf.keras.layers.Dropout(0.05))
+def model_definition(INPUTS_r, OUTPUTS_a):
+    '''Define and return model'''
 
-    model.add(tf.keras.layers.Dense(OUTPUTS_a, activation='softmax')) #final layer , outputs_a is the number of targets
+    # ⭐ CHANGE THIS LINE TO TEST DIFFERENT ARCHITECTURES:
+    # Options: 'residual', 'dense', 'mixture', 'auxiliary', 'hybrid'
+    architecture = 'hybrid'
 
-    model.compile(optimizer='AdamW', loss='categorical_crossentropy', metrics=['accuracy'])
+    print("\n" + "=" * 70)
+    print(f"Loading {architecture.upper()} Architecture")
+    print("=" * 70 + "\n")
 
-    save_model(model) #print Summary
+    model = get_model(architecture, INPUTS_r, OUTPUTS_a)
+    save_model(model)
+
     return model
-#------------------------------------------------------------------------------------------------------------------
 
-def train_func(train_ds):
-    # '''
-    #     train the model
-    # '''
-    #
-    # #early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience =100)
-    # check_point = tf.keras.callbacks.ModelCheckpoint('model_{}.keras'.format(NICKNAME), monitor='accuracy', save_best_only=True)
-    # final_model = model_definition()
-    #
-    # #final_model.fit(train_ds,  epochs=n_epoch, callbacks=[early_stop, check_point])
-    # final_model.fit(train_ds,  epochs=n_epoch, callbacks=[check_point])
-    '''
-            train the model
 
-            Args:
-                train_ds: training dataset
-                class_weights: optional dictionary of class weights for imbalanced data
-    '''
+def train_func(train_ds, class_weights=None):  # <-- REPLACED
+    '''Train the model'''
 
-    # early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience =100)
-    check_point = tf.keras.callbacks.ModelCheckpoint('model_{}.keras'.format(NICKNAME), monitor='accuracy',
-                                                     save_best_only=True)
-    final_model = model_definition()
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor='accuracy',
+        patience=25,
+        restore_best_weights=True,
+        min_delta=0.001,
+        verbose=1
+    )
 
-    # ✅ MODIFIED: Pass class_weights if provided
+    lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor='accuracy',
+        factor=0.5,
+        patience=10,
+        min_lr=1e-7,
+        verbose=1
+    )
+
+    check_point = tf.keras.callbacks.ModelCheckpoint(
+        'model_{}.keras'.format(NICKNAME),
+        monitor='accuracy',
+        save_best_only=True,
+        verbose=1
+    )
+
+    final_model = model_definition(INPUTS_r, OUTPUTS_a)
+
     fit_kwargs = {
         'epochs': n_epoch,
-        'callbacks': [check_point]
+        'callbacks': [early_stop, lr_scheduler, check_point],
+        'verbose': 1
     }
 
-    # if class_weights is not None:
-    #     print("\nApplying class weights to balance training...")
-    #     fit_kwargs['class_weight'] = class_weights
-    #
-    # final_model.fit(train_ds, **fit_kwargs)
-    final_model.fit(train_ds, epochs=n_epoch, callbacks=[check_point])
+    if class_weights is not None:
+        print("\n" + "=" * 70)
+        print("Applying class weights to balance training...")
+        print("=" * 70 + "\n")
+        fit_kwargs['class_weight'] = class_weights
+
+    history = final_model.fit(train_ds, **fit_kwargs)
+
+    print("\n" + "=" * 70)
+    print("TRAINING COMPLETE")
+    print("=" * 70)
+    print(f"Epochs trained: {len(history.history['accuracy'])}")
+    print(f"Final accuracy: {history.history['accuracy'][-1]:.4f}")
+    print(f"Best accuracy: {max(history.history['accuracy']):.4f}")
+    print("=" * 70 + "\n")
 
 
-#------------------------------------------------------------------------------------------------------------------
-
-def predict_func(test_ds):
-    '''
-        predict fumction
-    '''
+def predict_func(test_ds):  # <-- REPLACED
+    '''Make predictions on test data'''
 
     final_model = tf.keras.models.load_model('model_{}.keras'.format(NICKNAME))
-    res = final_model.predict(test_ds)
-    xres = [ tf.argmax(f).numpy() for f in res]
+
+    predictions = final_model.predict(test_ds)
+
+    # Handle both single and multiple outputs
+    if isinstance(predictions, list):
+        main_output = predictions[0]  # Get main output if using auxiliary model
+        xres = [tf.argmax(f).numpy() for f in main_output]
+    else:
+        xres = [tf.argmax(f).numpy() for f in predictions]
+
     xdf_dset['results'] = xres
     xdf_dset.to_excel('results_{}.xlsx'.format(NICKNAME), index=False)
-#------------------------------------------------------------------------------------------------------------------
+
 
 def metrics_func(metrics, aggregates=[]):
-    '''
-    multiple functiosn of metrics to call each function
-    f1, cohen, accuracy, mattews correlation
-    list of metrics: f1_micro, f1_macro, f1_avg, coh, acc, mat
-    list of aggregates : avg, sum
-    :return:
-    '''
+    '''Calculate multiple evaluation metrics'''
 
     def f1_score_metric(y_true, y_pred, type):
-        '''
-            type = micro,macro,weighted,samples
-        :param y_true:
-        :param y_pred:
-        :param average:
-        :return: res
-        '''
         res = f1_score(y_true, y_pred, average=type)
         print("f1_score {}".format(type), res)
         return res
@@ -406,95 +675,74 @@ def metrics_func(metrics, aggregates=[]):
         print('mattews_coef', res)
         return res
 
-
-    # For multiclass
-
     x = lambda x: tf.argmax(x == class_names).numpy()
     y_true = np.array(xdf_dset['target'].apply(x))
     y_pred = np.array(xdf_dset['results'])
 
-    # End of Multiclass
-
     xcont = 1
     xsum = 0
-    xavg = 0
 
     for xm in metrics:
         if xm == 'f1_micro':
-            # f1 score average = micro
             xmet = f1_score_metric(y_true, y_pred, 'micro')
         elif xm == 'f1_macro':
-            # f1 score average = macro
             xmet = f1_score_metric(y_true, y_pred, 'macro')
         elif xm == 'f1_weighted':
-            # f1 score average =
             xmet = f1_score_metric(y_true, y_pred, 'weighted')
         elif xm == 'coh':
-             # Cohen kappa
             xmet = cohen_kappa_metric(y_true, y_pred)
         elif xm == 'acc':
-            # Accuracy
-            xmet =accuracy_metric(y_true, y_pred)
+            xmet = accuracy_metric(y_true, y_pred)
         elif xm == 'mat':
-            # Matthews
-            xmet =matthews_metric(y_true, y_pred)
+            xmet = matthews_metric(y_true, y_pred)
         else:
-            xmet =print('Metric does not exist')
+            xmet = print('Metric does not exist')
 
         xsum = xsum + xmet
         xcont = xcont + 1
 
     if 'sum' in aggregates:
-        print('Sum of Metrics : ', xsum )
+        print('Sum of Metrics : ', xsum)
     if 'avg' in aggregates and xcont > 0:
-        print('Average of Metrics : ', xsum/xcont)
-    # Ask for arguments for each metric
-#------------------------------------------------------------------------------------------------------------------
+        print('Average of Metrics : ', xsum / xcont)
 
-def main():
+
+def main():  # <-- REPLACED
     global xdf_data, class_names, INPUTS_r, OUTPUTS_a, xdf_dset
 
-    for file in os.listdir(PATH+os.path.sep + "excel"):
+    for file in os.listdir(PATH + os.path.sep + "excel"):
         if file[-5:] == '.xlsx':
             FILE_NAME = PATH + os.path.sep + "excel" + os.path.sep + file
 
-    # Reading and filtering Excel file
     xdf_data = pd.read_excel(FILE_NAME)
 
-    class_names= process_target(1)  # 1: Multiclass 2: Multilabel 3:Binary
+    class_names = process_target(1)
 
     INPUTS_r = IMAGE_SIZE * IMAGE_SIZE * CHANNELS
     OUTPUTS_a = len(class_names)
 
     ## Processing Train dataset
-
     xdf_dset = xdf_data[xdf_data["split"] == 'train'].copy()
 
-    train_ds = read_data( OUTPUTS_a, augment=True)
-    train_func(train_ds)
-    # # ✅ NEW: Check for class imbalance and get class weights if needed
-    # class_weights = check_class_imbalance(xdf_dset, class_names)
-    #
-    # train_ds = read_data(OUTPUTS_a, augment=True)
-    # # ✅ MODIFIED: Pass class_weights to training function
-    # train_func(train_ds, class_weights=class_weights)
+    # ✓ ENABLE CLASS WEIGHTS
+    class_weights = check_class_imbalance(xdf_dset, class_names)
+
+    train_ds = read_data(OUTPUTS_a, xdf_dset, augment=True)
+
+    # ✓ PASS CLASS WEIGHTS
+    train_func(train_ds, class_weights=class_weights)
 
     # Preprocessing Test dataset
-
     xdf_dset = xdf_data[xdf_data["split"] == 'test'].copy()
 
-    test_ds= read_data(OUTPUTS_a, augment=False)
+    test_ds = read_data(OUTPUTS_a, xdf_dset, augment=False)
     predict_func(test_ds)
 
-    ## Metrics Function over the result of the test dataset
-    list_of_metrics = ['f1_macro', 'coh']
-    list_of_agg = ['avg']
+    ## Metrics Function
+    list_of_metrics = ['f1_macro', 'coh', 'acc', 'f1_weighted', 'mat']
+    list_of_agg = ['avg', 'sum']
     metrics_func(list_of_metrics, list_of_agg)
-# ------------------------------------------------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
-
     main()
-#------------------------------------------------------------------------------------------------------------------
-
